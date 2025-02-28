@@ -1,0 +1,133 @@
+services:
+  postgres:
+    image: postgres-mongo-fdw
+    build: .
+    depends_on:
+      - mongo
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    configs:
+      - source: postgres_init_script
+        target: /docker-entrypoint-initdb.d/99-custom.sh
+
+  db-admin:
+    image: dpage/pgadmin4:8
+    depends_on:
+      - postgres
+    ports:
+      - 5433:80
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@example.org
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    volumes:
+      - postgres_admin_data:/var/lib/pgadmin
+    configs:
+      - source: postgres_password
+        target: /run/secrets/password.txt
+      - source: postgres_servers
+        target: /pgadmin4/servers.json
+
+  mongo:
+    image: mongo
+    ports:
+      - 27017:27017
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin
+      MONGO_INITDB_DATABASE: app
+    volumes:
+      - mongo_data:/data/db
+    configs:
+      - source: mongo_init_script
+        target: /docker-entrypoint-initdb.d/99-custom.js
+
+  mongo-admin:
+    image: mongo-express
+    restart: always
+    depends_on:
+      - mongo
+    ports:
+      - 27018:8081
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: admin
+      ME_CONFIG_MONGODB_URL: mongodb://admin:admin@mongo:27017
+      ME_CONFIG_BASICAUTH: false
+
+volumes:
+  postgres_data:
+  postgres_admin_data:
+  mongo_data:
+
+configs:
+  postgres_servers:
+    content: |
+      {
+        "Servers": {
+          "1": {
+            "Group": "postgres",
+            "Name": "postgres",
+            "Port": 5432,
+            "Username": "postgres",
+            "PassFile": "/run/secrets/password.txt",
+            "Host": "postgres",
+            "SSLMode": "prefer",
+            "MaintenanceDB": "postgres"
+          }
+        }
+      }
+  postgres_password:
+    content: postgres
+  postgres_init_script:
+    content: |
+      #!/bin/bash
+      set -e
+
+      psql -v ON_ERROR_STOP=1 --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB" <<-EOSQL
+        CREATE EXTENSION mongo_fdw;
+
+        CREATE SERVER "mongo" FOREIGN DATA WRAPPER mongo_fdw OPTIONS (
+          address 'mongo',
+          port '27017',
+          authentication_database 'admin'
+        );
+
+        CREATE USER MAPPING FOR postgres SERVER "mongo" OPTIONS (
+          username 'admin',
+          password 'admin'
+        );
+
+        CREATE FOREIGN TABLE items (
+          _id name,
+          name text,
+          price float
+        ) SERVER "mongo" OPTIONS (
+          database 'app',
+          collection 'items'
+        );
+      EOSQL
+  mongo_init_script:
+    content: |
+      db.createCollection("items");
+      db.items.insertMany([
+        {
+          _id: new ObjectId(),
+          name: "Apples",
+          price: 4.99
+        },
+        {
+          _id: new ObjectId(),
+          name: "Bananas",
+          price: 9.99
+        },
+        {
+          _id: new ObjectId(),
+          name: "Tomatoes",
+          price: 3.99
+        },
+      ]);
